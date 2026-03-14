@@ -61,11 +61,27 @@ jobs:
             -Headers $headers `
             -OutFile "artifact.zip"
 
-          New-Item -Force -ItemType Directory "dist" | Out-Null
-          Expand-Archive -Path "artifact.zip" -DestinationPath "dist" -Force
+          # GitHub artifact DL は ZIPの中にZIPが入っている二重構造になる
+          New-Item -Force -ItemType Directory "artifact_outer" | Out-Null
+          Expand-Archive -Path "artifact.zip" -DestinationPath "artifact_outer" -Force
 
-          Write-Host "=== Downloaded files ==="
-          Get-ChildItem dist | Select-Object Name, Length
+          Write-Host "=== Outer zip contents ==="
+          Get-ChildItem artifact_outer -Recurse | Select-Object FullName, Length
+
+          New-Item -Force -ItemType Directory "dist" | Out-Null
+
+          # 内側にZIPがあればさらに展開、なければそのままdistへコピー
+          $innerZips = Get-ChildItem "artifact_outer" -Recurse -Filter "*.zip"
+          if ($innerZips) {
+            foreach ($z in $innerZips) {
+              Expand-Archive -Path $z.FullName -DestinationPath "dist" -Force
+            }
+          } else {
+            Copy-Item "artifact_outer\*" "dist\" -Recurse -Force
+          }
+
+          Write-Host "=== dist contents ==="
+          Get-ChildItem dist -Recurse | Select-Object FullName, Length
 
       # ── 2. publicリポジトリに GitHub Release を作成 ──────────────────
       - name: Create GitHub Release (public)
