@@ -1,0 +1,97 @@
+name: Publish Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version tag (e.g. v1.0.0)'
+        required: true
+      run_id:
+        description: 'GitHub Actions run_id of the private build'
+        required: true
+      prerelease:
+        description: 'Mark as pre-release'
+        required: false
+        default: 'false'
+      src_sha:
+        description: 'Source commit SHA (for release notes)'
+        required: false
+        default: ''
+      src_repo:
+        description: 'Source repository (owner/repo)'
+        required: false
+        default: ''
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. privateリポジトリのアーティファクトをDL ───────────────────
+      - name: Download artifact from private repo
+        shell: pwsh
+        env:
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+        run: |
+          $runId   = "${{ inputs.run_id }}"
+          $srcRepo = "${{ inputs.src_repo }}"
+          $token   = $env:RELEASE_PAT
+          $headers = @{
+            Authorization          = "Bearer $token"
+            Accept                 = "application/vnd.github+json"
+            "X-GitHub-Api-Version" = "2022-11-28"
+            "User-Agent"           = "YTW-Chat-TransViewer-CI"
+          }
+
+          Write-Host "Source: $srcRepo  run_id: $runId"
+
+          $artifacts = Invoke-RestMethod `
+            -Uri "https://api.github.com/repos/${srcRepo}/actions/runs/${runId}/artifacts" `
+            -Headers $headers
+
+          $artifact = $artifacts.artifacts |
+            Where-Object { $_.name -like "YTW_Chat_TransViewer-*-installer" } |
+            Select-Object -First 1
+
+          if (-not $artifact) { Write-Error "Artifact not found"; exit 1 }
+          Write-Host "Found: $($artifact.name) (id=$($artifact.id))"
+
+          Invoke-WebRequest `
+            -Uri "https://api.github.com/repos/${srcRepo}/actions/artifacts/$($artifact.id)/zip" `
+            -Headers $headers `
+            -OutFile "artifact.zip"
+
+          New-Item -Force -ItemType Directory "dist" | Out-Null
+          Expand-Archive -Path "artifact.zip" -DestinationPath "dist" -Force
+
+          Write-Host "=== Downloaded files ==="
+          Get-ChildItem dist | Select-Object Name, Length
+
+      # ── 2. publicリポジトリに GitHub Release を作成 ──────────────────
+      - name: Create GitHub Release (public)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version }}
+          name: YTW_Chat_TransViewer ${{ inputs.version }}
+          files: dist/YTW_Chat_TransViewer-*-setup.exe
+          prerelease: ${{ inputs.prerelease == 'true' }}
+          generate_release_notes: false
+          body: |
+            ## YTW_Chat_TransViewer ${{ inputs.version }}
+
+            Twitch・YouTube のライブチャットをリアルタイムで表示・翻訳・読み上げする Windows アプリです。
+
+            ### インストール方法
+            1. `YTW_Chat_TransViewer-*-setup.exe` をダウンロードして実行
+            2. インストール先を確認して「インストール」
+            3. `YTW_Chat_TransViewer.exe` が起動します
+
+            ### 動作環境
+            - Windows 10 / 11 (x64)
+            - .NET Framework 4.7.2 以上
+            - [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/ja-jp/microsoft-edge/webview2/)
+
+            ---
+            **Build:** ${{ inputs.src_repo }}@${{ inputs.src_sha }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
